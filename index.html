@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>codezoom-web</title>
+<style>
+  :root { --hl: #2d4f67; --bar: #1d1f23; --pane: #16181c; --txt: #d7dae0; --dim: #8b929e; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--pane); color: var(--txt);
+               font-family: system-ui, sans-serif; }
+  #bar { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
+         padding: .5rem .75rem; background: var(--bar); border-bottom: 1px solid #000; }
+  #bar label { font-size: .85rem; color: var(--dim); }
+  #bar input[type=text] { width: 8rem; }
+  #status { margin-left: auto; font-size: .8rem; color: var(--dim); }
+  #split { display: flex; height: calc(100% - 3rem); }
+  #viewer { flex: 1 1 55%; border: 0; background: #909090; min-width: 0; }
+  #codewrap { flex: 1 1 45%; overflow: auto; background: var(--pane);
+              border-left: 1px solid #000; }
+  #code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+          font-size: 12.5px; line-height: 1.45; white-space: pre; }
+  .ln { padding: 0 .75rem; }
+  .ln.hl { background: var(--hl); }
+  #code:empty::after { content: "Load a disassembly listing (.lst / .dis) to begin.";
+          color: var(--dim); display: block; padding: 1rem; white-space: normal;
+          font-family: system-ui, sans-serif; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <label>waveform <input type="file" id="fstInput" accept=".fst,.vcd,.ghw,.fst.gz"></label>
+    <label>listing <input type="file" id="lstInput" accept=".lst,.dis,.txt,.asm"></label>
+    <label>PC signal <input type="text" id="sigInput" value="dbg_pc"></label>
+    <span id="status">starting viewer…</span>
+  </div>
+  <div id="split">
+    <!-- Point this at wherever you host the patched Surfer build (the trunk `dist/`). -->
+    <!-- The #dev suffix disables Surfer's service-worker cache during development. -->
+    <iframe id="viewer" src="./viewer/index.html#dev"></iframe>
+    <div id="codewrap"><div id="code"></div></div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ====== DEFAULTS ==========================================================
+  // One RTL codebase: load the same waveform + same saved layout on startup.
+  // Paths are relative to this page. Set either to null to disable auto-load.
+  const DEFAULT_WAVE_URL    = "http://localhost:8080/waves/blink.fst";       // waveform served on this site
+  const DEFAULT_STATE_URL   = "http://localhost:8080/state/bio.surf.ron";  // saved Surfer layout (.surf.ron)
+  const DEFAULT_LISTING_URL = "http://localhost:8080/listings/blink.dis";    // disassembly shown in the code pane
+  // ==========================================================================
+
+  const $ = (id) => document.getElementById(id);
+  const codeEl = $("code"), statusEl = $("status"), viewer = $("viewer");
+
+  let surferReady = false;
+  let pendingFstUrl = null;        // object URL queued until the viewer signals ready
+  let pendingStateUrl = null;      // .ron to apply once the current wave finishes loading
+  let lineEls = [];                // one <div> per listing line
+  let exact = new Map();           // "addr(decimal string)" -> line index
+  let sorted = [];                 // [{a: BigInt, i: int}] ascending, for floor lookup
+  let curHl = -1;
+
+  const setStatus = (s) => { statusEl.textContent = s; };
+
+  // ---- disassembly listing -------------------------------------------------
+  // Match the leading hex address token of an objdump-style line, e.g.
+  //   "   80000124:\t00000013  nop"  ->  80000124
+  const ADDR_RE = /^\s*([0-9a-fA-F]+):/;
+
+  function loadListing(text) {
+    const lines = text.split(/\r?\n/);
+    exact = new Map();
+    sorted = [];
+    codeEl.textContent = "";
+    lineEls = [];
+
+    const frag = document.createDocumentFragment();
+    lines.forEach((ln, i) => {
+      const div = document.createElement("div");
+      div.className = "ln";
+      div.textContent = ln === "" ? "\u00a0" : ln;
+      frag.appendChild(div);
+      lineEls.push(div);
+
+      const m = ln.match(ADDR_RE);
+      if (m) {
+        const a = BigInt("0x" + m[1]);
+        const key = a.toString();
+        if (!exact.has(key)) exact.set(key, i);
+        sorted.push({ a, i });
+      }
+    });
+    codeEl.appendChild(frag);
+    sorted.sort((x, y) => (x.a < y.a ? -1 : x.a > y.a ? 1 : 0));
+    setStatus(`listing: ${lines.length} lines, ${sorted.length} addresses`);
+  }
+
+  function highlightPc(pc) {
+    let idx = exact.get(pc.toString());
+    if (idx === undefined && sorted.length) {
+      // floor: greatest address <= pc (covers PCs landing mid-instruction)
+      let lo = 0, hi = sorted.length - 1, best = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (sorted[mid].a <= pc) { best = mid; lo = mid + 1; } else hi = mid - 1;
+      }
+      if (best >= 0) idx = sorted[best].i;
+    }
+    if (idx === undefined) { setStatus(`PC 0x${pc.toString(16)}: no matching line`); return; }
+
+    if (curHl >= 0 && lineEls[curHl]) lineEls[curHl].classList.remove("hl");
+    const el = lineEls[idx];
+    if (el) {
+      el.classList.add("hl");
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    curHl = idx;
+    setStatus(`PC 0x${pc.toString(16)} -> line ${idx + 1}`);
+  }
+
+  // ---- handle a cursor_set event ------------------------------------------
+  function onCursorSet(msg) {
+    const sig = ($("sigInput").value || "dbg_pc").trim();
+    const hit = (msg.values || []).find((v) => v.name && v.name.endsWith(sig));
+    if (!hit) return;
+    let pc;
+    try { pc = BigInt("0x" + hit.value); } catch { return; }  // value is hex, no 0x
+    highlightPc(pc);
+  }
+
+  // ---- messages forwarded up from the iframe bridge ------------------------
+  window.addEventListener("message", (e) => {
+    const d = e.data;
+    if (!d || d.type !== "surfer-bridge") return;
+
+    if (d.kind === "ready") {
+      surferReady = true;
+      setStatus("viewer ready");
+      if (pendingFstUrl) {
+        startLoad(pendingFstUrl, DEFAULT_STATE_URL);   // a file picked before ready
+        pendingFstUrl = null;
+      } else if (DEFAULT_WAVE_URL) {
+        startLoad(DEFAULT_WAVE_URL, DEFAULT_STATE_URL); // default codebase on startup
+      }
+      return;
+    }
+
+    if (d.kind === "wcp" && d.msg && d.msg.type === "event") {
+      if (d.msg.event === "cursor_set") {
+        onCursorSet(d.msg);
+      } else if (d.msg.event === "waveforms_loaded" && pendingStateUrl) {
+        // waveform is now loaded -> safe to apply the saved layout onto it
+        applyState(pendingStateUrl);
+        pendingStateUrl = null;
+      }
+    }
+  });
+
+  // ---- loading the waveform + saved layout into the embedded viewer --------
+  // Loads `waveUrl`, and remembers `stateUrl` to apply after the wave finishes
+  // loading (load_state needs a waveform already present, or it drops the items).
+  function startLoad(waveUrl, stateUrl) {
+    pendingStateUrl = stateUrl || null;
+    viewer.contentWindow.postMessage({ command: "LoadUrl", url: waveUrl }, "*");
+    setStatus("loading waveform…");
+  }
+
+  // Fetch a .surf.ron from the server and inject it as LoadStateFromData(Vec<u8>).
+  async function applyState(url) {
+    try {
+      const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      const msg = JSON.stringify({ LoadStateFromData: Array.from(buf) });
+      viewer.contentWindow.postMessage({ command: "InjectMessage", message: msg }, "*");
+      setStatus("applied saved layout");
+    } catch (e) {
+      console.error("state load failed", e);
+      setStatus("state load failed (see console)");
+    }
+  }
+
+  $("fstInput").addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);    // blob: URL, fetchable by the viewer
+    if (surferReady) startLoad(url, DEFAULT_STATE_URL); else pendingFstUrl = url;
+  });
+
+  $("lstInput").addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    f.text().then(loadListing);
+  });
+
+  // ---- default disassembly listing on startup ------------------------------
+  // The code pane is independent of the viewer, so load this immediately.
+  if (DEFAULT_LISTING_URL) {
+    fetch(DEFAULT_LISTING_URL)
+      .then((r) => r.text())
+      .then(loadListing)
+      .catch((e) => {
+        console.error("listing load failed", e);
+        setStatus("listing load failed (see console)");
+      });
+  }
+})();
+</script>
+</body>
+</html>
