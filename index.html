@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>codezoom-web</title>
 <style>
-  :root { --hl: #2d4f67; --bar: #1d1f23; --pane: #16181c; --txt: #d7dae0; --dim: #8b929e; }
+  :root { --hl: #2d4f67; --bar: #1d1f23; --pane: #16181c; --txt: #d7dae0; --dim: #8b929e; --accent: #5aa9e6; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--pane); color: var(--txt);
                font-family: system-ui, sans-serif; }
@@ -15,7 +15,21 @@
   #bar input[type=text] { width: 8rem; }
   #status { margin-left: auto; font-size: .8rem; color: var(--dim); }
   #split { display: flex; height: calc(100% - 3rem); }
-  #viewer { flex: 1 1 55%; border: 0; background: #909090; min-width: 0; }
+
+  /* viewer pane wraps the iframe so the loading overlay can sit on top of it */
+  #viewerwrap { flex: 1 1 55%; position: relative; min-width: 0; }
+  #viewer { width: 100%; height: 100%; border: 0; background: #909090; display: block; }
+
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
+             gap: .8rem; align-items: center; justify-content: center;
+             background: rgba(22, 24, 28, .88); color: var(--txt); font-size: .9rem;
+             transition: opacity .35s ease; }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+  .spinner { width: 38px; height: 38px; border: 4px solid rgba(139, 146, 158, .35);
+             border-top-color: var(--accent); border-radius: 50%;
+             animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   #codewrap { flex: 1 1 45%; overflow: auto; background: var(--pane);
               border-left: 1px solid #000; }
   #code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -35,9 +49,12 @@
     <span id="status">starting viewer…</span>
   </div>
   <div id="split">
-    <!-- Point this at wherever you host the patched Surfer build (the trunk `dist/`). -->
-    <!-- The #dev suffix disables Surfer's service-worker cache during development. -->
-    <iframe id="viewer" src="./viewer/index.html#dev"></iframe>
+    <div id="viewerwrap">
+      <!-- Point this at wherever you host the patched Surfer build (the trunk `dist/`). -->
+      <!-- The #dev suffix disables Surfer's service-worker cache during development. -->
+      <iframe id="viewer" src="./viewer/index.html#dev"></iframe>
+      <div id="overlay"><div class="spinner"></div><div id="ovlabel">Loading viewer…</div></div>
+    </div>
     <div id="codewrap"><div id="code"></div></div>
   </div>
 
@@ -47,17 +64,16 @@
 
   // ====== DEFAULTS ==========================================================
   // One RTL codebase: load the same waveform + same saved layout on startup.
-  // Paths are relative to this page. Set either to null to disable auto-load.
-  // const DEFAULT_WAVE_URL    = "http://localhost:8080/waves/blink.fst";       // waveform served on this site
-  // const DEFAULT_STATE_URL   = "http://localhost:8080/state/blink.surf.ron";  // saved Surfer layout (.surf.ron)
-  // const DEFAULT_LISTING_URL = "http://localhost:8080/listings/blink.dis";    // disassembly shown in the code pane
-  const DEFAULT_WAVE_URL    = "https://baochip.com/bio-surfer/waves/blink.fst";
-  const DEFAULT_STATE_URL   = "https://baochip.com/bio-surfer/state/blink.surf.ron";
-  const DEFAULT_LISTING_URL = "https://baochip.com/bio-surfer/listings/blink.dis";
-    // ==========================================================================
+  // Keep these RELATIVE to this page — the same file then works unchanged on
+  // localhost and in production (e.g. /bio-surfer/...). Set any to null to skip.
+  const DEFAULT_WAVE_URL    = "./waves/blink.fst";        // waveform served on this site
+  const DEFAULT_STATE_URL   = "./state/blink.surf.ron";   // saved Surfer layout (.surf.ron)
+  const DEFAULT_LISTING_URL = "./listings/blink.dis";     // disassembly shown in the code pane
+  // ==========================================================================
 
   const $ = (id) => document.getElementById(id);
   const codeEl = $("code"), statusEl = $("status"), viewer = $("viewer");
+  const overlay = $("overlay"), ovlabel = $("ovlabel");
 
   let surferReady = false;
   let pendingFstUrl = null;        // object URL queued until the viewer signals ready
@@ -66,8 +82,29 @@
   let exact = new Map();           // "addr(decimal string)" -> line index
   let sorted = [];                 // [{a: BigInt, i: int}] ascending, for floor lookup
   let curHl = -1;
+  let overlayTimer = null;
 
   const setStatus = (s) => { statusEl.textContent = s; };
+
+  // Resolve a path against THIS page's URL so relative defaults work on any host,
+  // and so the iframe (which would otherwise resolve relative to /viewer/) gets a
+  // fully-qualified URL. Absolute URLs and blob: URLs pass through unchanged.
+  const resolve = (p) => (p ? new URL(p, window.location.href).href : null);
+
+  // ---- loading overlay -----------------------------------------------------
+  function showOverlay(text) {
+    ovlabel.textContent = text;
+    overlay.classList.remove("hidden");
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(() => {           // safety: never block the UI forever
+      hideOverlay();
+      setStatus("load timed out — check the console / network tab");
+    }, 60000);
+  }
+  function hideOverlay() {
+    clearTimeout(overlayTimer);
+    overlay.classList.add("hidden");
+  }
 
   // ---- disassembly listing -------------------------------------------------
   // Match the leading hex address token of an objdump-style line, e.g.
@@ -142,12 +179,14 @@
 
     if (d.kind === "ready") {
       surferReady = true;
-      setStatus("viewer ready");
       if (pendingFstUrl) {
         startLoad(pendingFstUrl, null);                // user's own file: no default state
         pendingFstUrl = null;
       } else if (DEFAULT_WAVE_URL) {
         startLoad(DEFAULT_WAVE_URL, DEFAULT_STATE_URL); // default codebase: "start here" view
+      } else {
+        setStatus("viewer ready");
+        hideOverlay();                                  // nothing to auto-load
       }
       return;
     }
@@ -155,10 +194,10 @@
     if (d.kind === "wcp" && d.msg && d.msg.type === "event") {
       if (d.msg.event === "cursor_set") {
         onCursorSet(d.msg);
-      } else if (d.msg.event === "waveforms_loaded" && pendingStateUrl) {
-        // waveform is now loaded -> safe to apply the saved layout onto it
-        applyState(pendingStateUrl);
-        pendingStateUrl = null;
+      } else if (d.msg.event === "waveforms_loaded") {
+        if (pendingStateUrl) { applyState(pendingStateUrl); pendingStateUrl = null; }
+        setStatus("ready");
+        hideOverlay();                                  // waveform is drawn
       }
     }
   });
@@ -168,14 +207,15 @@
   // loading (load_state needs a waveform already present, or it drops the items).
   function startLoad(waveUrl, stateUrl) {
     pendingStateUrl = stateUrl || null;
-    viewer.contentWindow.postMessage({ command: "LoadUrl", url: waveUrl }, "*");
+    showOverlay("Loading waveform…");
+    viewer.contentWindow.postMessage({ command: "LoadUrl", url: resolve(waveUrl) }, "*");
     setStatus("loading waveform…");
   }
 
   // Fetch a .surf.ron from the server and inject it as LoadStateFromData(Vec<u8>).
   async function applyState(url) {
     try {
-      const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+      const buf = new Uint8Array(await (await fetch(resolve(url))).arrayBuffer());
       const msg = JSON.stringify({ LoadStateFromData: Array.from(buf) });
       viewer.contentWindow.postMessage({ command: "InjectMessage", message: msg }, "*");
       setStatus("applied saved layout");
@@ -201,7 +241,7 @@
   // ---- default disassembly listing on startup ------------------------------
   // The code pane is independent of the viewer, so load this immediately.
   if (DEFAULT_LISTING_URL) {
-    fetch(DEFAULT_LISTING_URL)
+    fetch(resolve(DEFAULT_LISTING_URL))
       .then((r) => r.text())
       .then(loadListing)
       .catch((e) => {
