@@ -1,0 +1,24 @@
+
+zig-out\blink_bio.o:     file format elf32-littleriscv
+
+
+Disassembly of section .text:
+
+00000000 <BM_BLINK_BIO_START>:
+   0:	00001137          	lui	sp,0x1
+   4:	a009                	j	6 <BM_BLINK_BIO_START+0x6>
+   6:	4581                	li	a1,0
+   8:	00200537          	lui	a0,0x200
+   c:	8d2a                	mv	s10,a0
+   e:	8c2a                	mv	s8,a0
+  10:	8bae                	mv	s7,a1
+  12:	7d000613          	li	a2,2000
+  16:	8b2a                	mv	s6,a0
+  18:	0585                	addi	a1,a1,1
+  1a:	fec59ee3          	bne	a1,a2,16 <BM_BLINK_BIO_START+0x16>
+  1e:	7d000693          	li	a3,2000
+  22:	4581                	li	a1,0
+  24:	8bae                	mv	s7,a1
+  26:	16fd                	addi	a3,a3,-1
+  28:	feed                	bnez	a3,22 <BM_BLINK_BIO_START+0x22>
+  2a:	b7f5                	j	16 <BM_BLINK_BIO_START+0x16>
