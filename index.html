@@ -16,8 +16,14 @@
   #status { margin-left: auto; font-size: .8rem; color: var(--dim); }
   #split { display: flex; height: calc(100% - 3rem); }
 
+  /* draggable divider between the two panes */
+  #divider { flex: 0 0 6px; background: #000; cursor: col-resize; }
+  #divider:hover, #divider.dragging { background: var(--accent); }
+  body.resizing { user-select: none; cursor: col-resize; }
+  body.resizing #viewer { pointer-events: none; }  /* keep the drag in the parent doc */
+
   /* viewer pane wraps the iframe so the loading overlay can sit on top of it */
-  #viewerwrap { flex: 1 1 55%; position: relative; min-width: 0; }
+  #viewerwrap { flex: 0 0 55%; position: relative; min-width: 0; }
   #viewer { width: 100%; height: 100%; border: 0; background: #909090; display: block; }
 
   #overlay { position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -30,8 +36,7 @@
              animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  #codewrap { flex: 1 1 45%; overflow: auto; background: var(--pane);
-              border-left: 1px solid #000; }
+  #codewrap { flex: 1 1 0; min-width: 0; overflow: auto; background: var(--pane); }
   #code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
           font-size: 12.5px; line-height: 1.45; white-space: pre; }
   .ln { padding: 0 .75rem; }
@@ -55,6 +60,7 @@
       <iframe id="viewer" src="./viewer/index.html#dev"></iframe>
       <div id="overlay"><div class="spinner"></div><div id="ovlabel">Loading viewer…</div></div>
     </div>
+    <div id="divider" title="Drag to resize"></div>
     <div id="codewrap"><div id="code"></div></div>
   </div>
 
@@ -236,6 +242,40 @@
     const f = e.target.files[0];
     if (!f) return;
     f.text().then(loadListing);
+  });
+
+  // ---- resizable split between viewer and code -----------------------------
+  const splitEl = $("split"), viewerwrap = $("viewerwrap"), divider = $("divider");
+  const SPLIT_KEY = "codezoom.split.pct";
+
+  function setSplit(pct) {
+    pct = Math.min(90, Math.max(10, pct));     // keep both panes usable
+    viewerwrap.style.flexBasis = pct + "%";
+  }
+
+  let savedSplit = NaN;
+  try { savedSplit = parseFloat(localStorage.getItem(SPLIT_KEY)); } catch {}
+  if (!isNaN(savedSplit)) setSplit(savedSplit);
+
+  let dragging = false;
+  divider.addEventListener("mousedown", (e) => {
+    dragging = true;
+    document.body.classList.add("resizing");
+    divider.classList.add("dragging");
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const r = splitEl.getBoundingClientRect();
+    setSplit(((e.clientX - r.left) / r.width) * 100);
+  });
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove("resizing");
+    divider.classList.remove("dragging");
+    const pct = parseFloat(viewerwrap.style.flexBasis);
+    if (!isNaN(pct)) { try { localStorage.setItem(SPLIT_KEY, pct.toFixed(1)); } catch {} }
   });
 
   // ---- default disassembly listing on startup ------------------------------
