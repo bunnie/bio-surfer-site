@@ -48,10 +48,13 @@
   // ====== DEFAULTS ==========================================================
   // One RTL codebase: load the same waveform + same saved layout on startup.
   // Paths are relative to this page. Set either to null to disable auto-load.
-  const DEFAULT_WAVE_URL    = "http://localhost:8080/waves/blink.fst";       // waveform served on this site
-  const DEFAULT_STATE_URL   = "http://localhost:8080/state/bio.surf.ron";  // saved Surfer layout (.surf.ron)
-  const DEFAULT_LISTING_URL = "http://localhost:8080/listings/blink.dis";    // disassembly shown in the code pane
-  // ==========================================================================
+  // const DEFAULT_WAVE_URL    = "http://localhost:8080/waves/blink.fst";       // waveform served on this site
+  // const DEFAULT_STATE_URL   = "http://localhost:8080/state/blink.surf.ron";  // saved Surfer layout (.surf.ron)
+  // const DEFAULT_LISTING_URL = "http://localhost:8080/listings/blink.dis";    // disassembly shown in the code pane
+  const DEFAULT_WAVE_URL    = "https://baochip.com/bio-surfer/waves/blink.fst";
+  const DEFAULT_STATE_URL   = "https://baochip.com/bio-surfer/state/blink.surf.ron";
+  const DEFAULT_LISTING_URL = "https://baochip.com/bio-surfer/listings/blink.dis";
+    // ==========================================================================
 
   const $ = (id) => document.getElementById(id);
   const codeEl = $("code"), statusEl = $("status"), viewer = $("viewer");
@@ -141,10 +144,10 @@
       surferReady = true;
       setStatus("viewer ready");
       if (pendingFstUrl) {
-        startLoad(pendingFstUrl, DEFAULT_STATE_URL);   // a file picked before ready
+        startLoad(pendingFstUrl, null);                // user's own file: no default state
         pendingFstUrl = null;
       } else if (DEFAULT_WAVE_URL) {
-        startLoad(DEFAULT_WAVE_URL, DEFAULT_STATE_URL); // default codebase on startup
+        startLoad(DEFAULT_WAVE_URL, DEFAULT_STATE_URL); // default codebase: "start here" view
       }
       return;
     }
@@ -186,7 +189,7 @@
     const f = e.target.files[0];
     if (!f) return;
     const url = URL.createObjectURL(f);    // blob: URL, fetchable by the viewer
-    if (surferReady) startLoad(url, DEFAULT_STATE_URL); else pendingFstUrl = url;
+    if (surferReady) startLoad(url, null); else pendingFstUrl = url;  // own file: no default state
   });
 
   $("lstInput").addEventListener("change", (e) => {
