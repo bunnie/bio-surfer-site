@@ -13,6 +13,10 @@
          padding: .5rem .75rem; background: var(--bar); border-bottom: 1px solid #000; }
   #bar label { font-size: .85rem; color: var(--dim); }
   #bar input[type=text] { width: 8rem; }
+  #bar input#stateInput { width: 16rem; }
+  #bar button { font: inherit; font-size: .8rem; padding: .2rem .6rem; cursor: pointer;
+                background: #2a2d33; color: var(--txt); border: 1px solid #000; border-radius: 4px; }
+  #bar button:hover { background: #343840; }
   #status { margin-left: auto; font-size: .8rem; color: var(--dim); }
   #split { display: flex; height: calc(100% - 3rem); }
 
@@ -51,6 +55,8 @@
     <label>waveform <input type="file" id="fstInput" accept=".fst,.vcd,.ghw,.fst.gz"></label>
     <label>listing <input type="file" id="lstInput" accept=".lst,.dis,.txt,.asm"></label>
     <label>PC signal <input type="text" id="sigInput" value="dbg_pc"></label>
+    <label>state <input type="text" id="stateInput" placeholder="(none — clean load)"></label>
+    <button id="refreshBtn" title="Reload the current waveform (fresh) and re-apply the state">↻ Refresh</button>
     <span id="status">starting viewer…</span>
   </div>
   <div id="split">
@@ -186,10 +192,10 @@
     if (d.kind === "ready") {
       surferReady = true;
       if (pendingFstUrl) {
-        startLoad(pendingFstUrl, null);                // user's own file: no default state
+        loadWave(pendingFstUrl);                        // a file picked before ready
         pendingFstUrl = null;
       } else if (DEFAULT_WAVE_URL) {
-        startLoad(DEFAULT_WAVE_URL, DEFAULT_STATE_URL); // default codebase: "start here" view
+        loadWave(DEFAULT_WAVE_URL);                     // default "start here" waveform
       } else {
         setStatus("viewer ready");
         hideOverlay();                                  // nothing to auto-load
@@ -209,19 +215,34 @@
   });
 
   // ---- loading the waveform + saved layout into the embedded viewer --------
-  // Loads `waveUrl`, and remembers `stateUrl` to apply after the wave finishes
-  // loading (load_state needs a waveform already present, or it drops the items).
-  function startLoad(waveUrl, stateUrl) {
-    pendingStateUrl = stateUrl || null;
+  let currentWaveUrl = null;   // last waveform source (URL or blob:) — used by Refresh
+
+  // The state file to apply, read live from the toolbar box (blank = clean load).
+  function stateUrlValue() {
+    const v = $("stateInput").value.trim();
+    return v || null;
+  }
+
+  // Loads `src` and re-applies the configured state once the wave finishes
+  // (load_state needs a waveform already present, or it drops the items).
+  // `bust` appends a cache-buster so a re-run sim's updated file is actually fetched.
+  function loadWave(src, bust) {
+    if (!src) return;
+    currentWaveUrl = src;
+    pendingStateUrl = stateUrlValue();
+    let url = resolve(src);
+    if (bust && !url.startsWith("blob:")) {
+      url += (url.includes("?") ? "&" : "?") + "_=" + Date.now();
+    }
     showOverlay("Loading waveform…");
-    viewer.contentWindow.postMessage({ command: "LoadUrl", url: resolve(waveUrl) }, "*");
+    viewer.contentWindow.postMessage({ command: "LoadUrl", url }, "*");
     setStatus("loading waveform…");
   }
 
   // Fetch a .surf.ron from the server and inject it as LoadStateFromData(Vec<u8>).
   async function applyState(url) {
     try {
-      const buf = new Uint8Array(await (await fetch(resolve(url))).arrayBuffer());
+      const buf = new Uint8Array(await (await fetch(resolve(url), { cache: "no-store" })).arrayBuffer());
       const msg = JSON.stringify({ LoadStateFromData: Array.from(buf) });
       viewer.contentWindow.postMessage({ command: "InjectMessage", message: msg }, "*");
       setStatus("applied saved layout");
@@ -235,13 +256,22 @@
     const f = e.target.files[0];
     if (!f) return;
     const url = URL.createObjectURL(f);    // blob: URL, fetchable by the viewer
-    if (surferReady) startLoad(url, null); else pendingFstUrl = url;  // own file: no default state
+    if (surferReady) loadWave(url); else pendingFstUrl = url;
   });
 
   $("lstInput").addEventListener("change", (e) => {
     const f = e.target.files[0];
     if (!f) return;
     f.text().then(loadListing);
+  });
+
+  // state box starts at the coded default; edit it to change what future loads apply
+  $("stateInput").value = DEFAULT_STATE_URL || "";
+
+  // Refresh: re-fetch the current waveform (fresh, cache-busted) and re-apply state
+  $("refreshBtn").addEventListener("click", () => {
+    if (!surferReady) return;
+    loadWave(currentWaveUrl || DEFAULT_WAVE_URL, true);
   });
 
   // ---- resizable split between viewer and code -----------------------------
