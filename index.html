@@ -54,7 +54,7 @@
   <div id="bar">
     <label>waveform <input type="file" id="fstInput" accept=".fst,.vcd,.ghw,.fst.gz"></label>
     <label>listing <input type="file" id="lstInput" accept=".lst,.dis,.txt,.asm"></label>
-    <label>PC signal <input type="text" id="sigInput" value="dbg_pc"></label>
+    <label>PC signal <input type="text" id="sigInput" value="execute_PC"></label>
     <label>state <input type="text" id="stateInput" placeholder="(none — clean load)"></label>
     <button id="refreshBtn" title="Reload the current waveform (fresh) and re-apply the state">↻ Refresh</button>
     <span id="status">starting viewer…</span>
@@ -78,9 +78,9 @@
   // One RTL codebase: load the same waveform + same saved layout on startup.
   // Keep these RELATIVE to this page — the same file then works unchanged on
   // localhost and in production (e.g. /bio-surfer/...). Set any to null to skip.
-  const DEFAULT_WAVE_URL    = "./waves/blink.fst";        // waveform served on this site
-  const DEFAULT_STATE_URL   = "./state/blink.surf.ron";   // saved Surfer layout (.surf.ron)
-  const DEFAULT_LISTING_URL = "./listings/blink.dis";     // disassembly shown in the code pane
+  const DEFAULT_WAVE_URL    = "./waves/sce.fst";        // waveform served on this site
+  const DEFAULT_STATE_URL   = "./state/sce.surf.ron";   // saved Surfer layout (.surf.ron)
+  const DEFAULT_LISTING_URL = "./listings/sce.dis";     // disassembly shown in the code pane
   // ==========================================================================
 
   const $ = (id) => document.getElementById(id);
