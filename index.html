@@ -56,6 +56,7 @@
     <label>listing <input type="file" id="lstInput" accept=".lst,.dis,.txt,.asm"></label>
     <label>PC signal <input type="text" id="sigInput" value="execute_PC"></label>
     <label>state <input type="text" id="stateInput" placeholder="(none — clean load)"></label>
+    <label title="Use your own saved layout (.surf.ron) instead of the URL above">state file <input type="file" id="stateFileInput" accept=".ron,.surf.ron"></label>
     <button id="refreshBtn" title="Reload the current waveform (fresh) and re-apply the state">↻ Refresh</button>
     <span id="status">starting viewer…</span>
   </div>
@@ -89,7 +90,9 @@
 
   let surferReady = false;
   let pendingFstUrl = null;        // object URL queued until the viewer signals ready
-  let pendingStateUrl = null;      // .ron to apply once the current wave finishes loading
+  let waveLoaded = false;          // a waveform is drawn, so load_state is safe now
+  let pendingState = null;         // .ron (URL string or Uint8Array) to apply once the current wave finishes loading
+  let stateFileBytes = null;       // locally-picked .surf.ron; overrides the URL box when set
   let lineEls = [];                // one <div> per listing line
   let exact = new Map();           // "addr(decimal string)" -> line index
   let sorted = [];                 // [{a: BigInt, i: int}] ascending, for floor lookup
@@ -207,7 +210,8 @@
       if (d.msg.event === "cursor_set") {
         onCursorSet(d.msg);
       } else if (d.msg.event === "waveforms_loaded") {
-        if (pendingStateUrl) { applyState(pendingStateUrl); pendingStateUrl = null; }
+        if (pendingState) { applyState(pendingState); pendingState = null; }
+        waveLoaded = true;
         setStatus("ready");
         hideOverlay();                                  // waveform is drawn
       }
@@ -217,8 +221,10 @@
   // ---- loading the waveform + saved layout into the embedded viewer --------
   let currentWaveUrl = null;   // last waveform source (URL or blob:) — used by Refresh
 
-  // The state file to apply, read live from the toolbar box (blank = clean load).
-  function stateUrlValue() {
+  // The state to apply, read live from the toolbar: a locally-picked file wins,
+  // otherwise the URL box (blank = clean load).
+  function stateSource() {
+    if (stateFileBytes) return stateFileBytes;
     const v = $("stateInput").value.trim();
     return v || null;
   }
@@ -229,7 +235,7 @@
   function loadWave(src, bust) {
     if (!src) return;
     currentWaveUrl = src;
-    pendingStateUrl = stateUrlValue();
+    pendingState = stateSource();
     let url = resolve(src);
     if (bust && !url.startsWith("blob:")) {
       url += (url.includes("?") ? "&" : "?") + "_=" + Date.now();
@@ -239,10 +245,16 @@
     setStatus("loading waveform…");
   }
 
-  // Fetch a .surf.ron from the server and inject it as LoadStateFromData(Vec<u8>).
-  async function applyState(url) {
+  // Applies a saved layout — from a server URL (string) or a locally-picked file
+  // (Uint8Array) — by injecting LoadStateFromData(Vec<u8>).
+  async function applyState(src) {
     try {
-      const buf = new Uint8Array(await (await fetch(resolve(url), { cache: "no-store" })).arrayBuffer());
+      let buf;
+      if (typeof src === "string") {
+        buf = new Uint8Array(await (await fetch(resolve(src), { cache: "no-store" })).arrayBuffer());
+      } else {
+        buf = src;
+      }
       const msg = JSON.stringify({ LoadStateFromData: Array.from(buf) });
       viewer.contentWindow.postMessage({ command: "InjectMessage", message: msg }, "*");
       setStatus("applied saved layout");
@@ -264,6 +276,25 @@
     if (!f) return;
     f.text().then(loadListing);
   });
+
+  // Browse for a local .surf.ron: apply it immediately once a waveform is on
+  // screen (load_state needs one present), and remember it so Refresh and
+  // waveform picks keep re-applying the same layout. Editing the URL box
+  // clears this override and switches back to URL-based loading.
+  $("stateFileInput").addEventListener("change", (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    f.arrayBuffer().then((b) => {
+      stateFileBytes = new Uint8Array(b);
+      if (waveLoaded) applyState(stateFileBytes);
+      else pendingState = stateFileBytes;
+      setStatus(`state file: ${f.name}`);
+    });
+    e.target.value = "";                       // allow re-picking the same file
+  });
+
+  // Typing (or clearing) the URL box switches back to URL-based loading
+  $("stateInput").addEventListener("input", () => { stateFileBytes = null; });
 
   // state box starts at the coded default; edit it to change what future loads apply
   $("stateInput").value = DEFAULT_STATE_URL || "";
